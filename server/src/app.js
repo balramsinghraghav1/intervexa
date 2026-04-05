@@ -13,7 +13,7 @@ app.use(
   cors({
     origin: [
   "http://localhost:5173",
-  "https://intervexa-backend.onrender.com"
+  "https://intervexa-frontend.onrender.com"
   ]
   })
 );
