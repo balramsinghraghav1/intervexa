@@ -17,7 +17,7 @@ export const getOverview = async (req, res) => {
       : 0;
     const latestScore = totalSessions ? sessions[totalSessions - 1].totalScore : 0;
 
-    const subjectBreakdown = ["DSA", "OS", "CN"].map((subject) => {
+    const subjectBreakdown = ["DSA", "OS", "CN", "DBMS"].map((subject) => {
       const filtered = sessions.filter((session) => session.subject === subject);
       const avg = filtered.length
         ? Math.round(filtered.reduce((sum, session) => sum + session.totalScore, 0) / filtered.length)
@@ -53,4 +53,3 @@ export const getOverview = async (req, res) => {
     return res.status(500).json({ message: error.message });
   }
 };
-

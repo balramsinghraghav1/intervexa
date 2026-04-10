@@ -6,13 +6,13 @@ const difficultyWeights = {
 
 export const getRawWeight = (difficulty) => difficultyWeights[difficulty] ?? 1;
 
-export const normalizeScore = (earnedRaw, maxRaw) => {
-  if (!maxRaw) {
-    return 0;
-  }
-
-  return Math.round((earnedRaw / maxRaw) * 20);
+export const clampAwardedScore = (score, difficulty) => {
+  const weight = getRawWeight(difficulty);
+  const safeScore = Math.max(0, Math.min(weight, Number(score) || 0));
+  return Math.round(safeScore * 2) / 2;
 };
+
+export const finalizeScore = (earnedRaw) => Math.min(20, Math.round(earnedRaw * 2) / 2);
 
 export const computeCoverageRatio = (answer, expectedPoints) => {
   const normalizedAnswer = (answer || "").toLowerCase();
@@ -50,4 +50,3 @@ export const buildRuleBasedFeedback = (question, answer, ratio) => {
 
   return `This answer is too shallow for interview standards. Focus on the core ideas: ${question.expectedPoints.slice(0, 3).join(", ")}.`;
 };
-

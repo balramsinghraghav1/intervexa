@@ -2,9 +2,10 @@ const API_BASE = `${import.meta.env.VITE_API_URL || "http://localhost:5000"}/api
 
 const request = async (path, options = {}) => {
   const token = localStorage.getItem("intervexa_token");
+  const isFormData = options.body instanceof FormData;
   const response = await fetch(`${API_BASE}${path}`, {
     headers: {
-      "Content-Type": "application/json",
+      ...(!isFormData ? { "Content-Type": "application/json" } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(options.headers || {})
     },
@@ -38,11 +39,25 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload)
     }),
-  submitInterview: (id, payload) =>
-    request(`/interviews/${id}/submit`, {
+  submitAnswer: (id, audioBlob) => {
+    const formData = new FormData();
+    formData.append("audio", audioBlob, "answer.webm");
+
+    return request(`/interviews/${id}/answer`, {
       method: "POST",
-      body: JSON.stringify(payload)
-    }),
+      body: formData
+    });
+  },
   history: () => request("/interviews/history")
 };
 
+export const createAudioUrl = (audioBase64, mimeType = "audio/wav") => {
+  if (!audioBase64) {
+    return null;
+  }
+
+  const binary = atob(audioBase64);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  const blob = new Blob([bytes], { type: mimeType });
+  return URL.createObjectURL(blob);
+};

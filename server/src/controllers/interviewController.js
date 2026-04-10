@@ -1,7 +1,12 @@
 import InterviewSession from "../models/InterviewSession.js";
 import User from "../models/User.js";
-import { evaluateAnswers, generateQuestions } from "../services/aiService.js";
-import { getRawWeight, normalizeScore } from "../utils/scoring.js";
+import {
+  evaluateSingleAnswer,
+  generateQuestions,
+  synthesizeSpeech,
+  transcribeAudio
+} from "../services/aiService.js";
+import { finalizeScore } from "../utils/scoring.js";
 
 const getTodayKey = () => new Date().toISOString().slice(0, 10);
 
@@ -52,55 +57,112 @@ export const startInterview = async (req, res) => {
       questions
     });
 
-    return res.status(201).json({ session });
+    const firstQuestion = session.questions[0];
+    const spokenText = `Starting your ${subject} interview. Question 1. ${firstQuestion.prompt}`;
+    const audioBase64 = await synthesizeSpeech(spokenText);
+
+    return res.status(201).json({
+      sessionId: session._id,
+      question: {
+        index: 0,
+        total: session.questions.length,
+        difficulty: firstQuestion.difficulty,
+        prompt: firstQuestion.prompt
+      },
+      spokenText,
+      audioBase64
+    });
   } catch (error) {
     return res.status(500).json({ message: error.message });
   }
 };
 
-export const submitInterview = async (req, res) => {
+export const submitAnswer = async (req, res) => {
   try {
     const { id } = req.params;
-    const { answers } = req.body;
     const session = await InterviewSession.findOne({ _id: id, user: req.user._id });
 
     if (!session) {
       return res.status(404).json({ message: "Interview session not found" });
     }
 
-    const evaluation = await evaluateAnswers(session.questions, answers || []);
+    if (session.status === "completed") {
+      return res.status(400).json({ message: "Interview already completed" });
+    }
 
-    let earnedRaw = 0;
-    let maxRaw = 0;
+    if (!req.file) {
+      return res.status(400).json({ message: "Audio answer is required" });
+    }
 
-    session.questions = session.questions.map((question, index) => {
-      const result = evaluation[index];
-      const weight = getRawWeight(question.difficulty);
-      maxRaw += weight;
-      earnedRaw += result.awardedRawScore;
+    const currentIndex = session.currentQuestionIndex;
+    const currentQuestion = session.questions[currentIndex];
 
-      return {
-        ...question.toObject(),
-        answer: result.answer,
-        feedback: result.feedback,
-        awardedRawScore: result.awardedRawScore
-      };
+    if (!currentQuestion) {
+      return res.status(400).json({ message: "No pending question found" });
+    }
+
+    const file = new File([req.file.buffer], req.file.originalname || "answer.webm", {
+      type: req.file.mimetype || "audio/webm"
     });
 
-    session.totalScore = normalizeScore(earnedRaw, maxRaw);
+    const transcript = await transcribeAudio(file);
+    const evaluation = await evaluateSingleAnswer(currentQuestion, transcript);
+
+    session.questions[currentIndex].answer = evaluation.answer;
+    session.questions[currentIndex].awardedRawScore = evaluation.awardedRawScore;
+    session.currentQuestionIndex += 1;
+
+    const earnedRaw = session.questions.reduce(
+      (sum, question) => sum + (question.awardedRawScore || 0),
+      0
+    );
+
+    const hasNextQuestion = session.currentQuestionIndex < session.questions.length;
+
+    if (hasNextQuestion) {
+      const nextQuestion = session.questions[session.currentQuestionIndex];
+      const spokenText = `Ok, next question. Question ${session.currentQuestionIndex + 1}. ${nextQuestion.prompt}`;
+      const audioBase64 = await synthesizeSpeech(spokenText);
+
+      await session.save();
+
+      return res.json({
+        status: "in_progress",
+        transcript,
+        savedMarks: evaluation.awardedRawScore,
+        totalScoreSoFar: finalizeScore(earnedRaw),
+        question: {
+          index: session.currentQuestionIndex,
+          total: session.questions.length,
+          difficulty: nextQuestion.difficulty,
+          prompt: nextQuestion.prompt
+        },
+        spokenText,
+        audioBase64
+      });
+    }
+
+    session.totalScore = finalizeScore(earnedRaw);
     session.summary =
       session.totalScore >= 16
-        ? "Excellent progress. You are handling interview concepts with strong confidence."
+        ? "Excellent voice interview performance. You showed strong concept clarity."
         : session.totalScore >= 11
-          ? "Good effort. Your basics are visible, and a bit more depth will improve your interview performance."
-          : "Keep practicing. Focus on core concepts and structured explanations for better scores.";
+          ? "Good progress. Your answers are solid, and more detail will raise your score."
+          : "Keep practicing. Focus on fundamentals and answering with clearer structure.";
     session.status = "completed";
     session.completedAt = new Date();
     await session.save();
 
     const streak = await updateStreak(req.user._id);
+    const spokenText = `Interview completed. Your final score is ${session.totalScore} out of 20.`;
+    const audioBase64 = await synthesizeSpeech(spokenText);
 
     return res.json({
+      status: "completed",
+      transcript,
+      savedMarks: evaluation.awardedRawScore,
+      spokenText,
+      audioBase64,
       session,
       streak
     });
@@ -123,4 +185,3 @@ export const getHistory = async (req, res) => {
     return res.status(500).json({ message: error.message });
   }
 };
-

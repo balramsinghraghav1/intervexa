@@ -1,23 +1,65 @@
-import OpenAI from "openai";
+import Groq from "groq-sdk";
 import { questionBlueprints } from "../data/fallbackQuestions.js";
 import {
-  buildRuleBasedFeedback,
+  clampAwardedScore,
   computeCoverageRatio,
   getRawWeight
 } from "../utils/scoring.js";
 
-const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+const chatModel = process.env.GROQ_CHAT_MODEL || "llama-3.3-70b-versatile";
+const transcriptionModel = process.env.GROQ_TRANSCRIPTION_MODEL || "whisper-large-v3-turbo";
+const ttsModel = process.env.GROQ_TTS_MODEL || "canopylabs/orpheus-v1-english";
+const ttsVoice = process.env.GROQ_TTS_VOICE || "hannah";
 
-const getClient = () => {
-  if (!process.env.OPENAI_API_KEY) {
+const shuffle = (items) => {
+  const next = [...items];
+
+  for (let index = next.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [next[index], next[swapIndex]] = [next[swapIndex], next[index]];
+  }
+
+  return next;
+};
+
+const buildFallbackQuestions = (subject) => {
+  const bank = questionBlueprints[subject] || questionBlueprints.DSA;
+  const byDifficulty = {
+    easy: bank.filter((question) => question.difficulty === "easy"),
+    medium: bank.filter((question) => question.difficulty === "medium"),
+    hard: bank.filter((question) => question.difficulty === "hard")
+  };
+
+  return [
+    ...shuffle(byDifficulty.easy).slice(0, 3),
+    ...shuffle(byDifficulty.medium).slice(0, 4),
+    ...shuffle(byDifficulty.hard).slice(0, 3)
+  ];
+};
+
+const extractJsonObject = (content) => {
+  if (!content) {
     return null;
   }
 
-  return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  try {
+    return JSON.parse(content);
+  } catch (_error) {
+    const match = content.match(/\{[\s\S]*\}/);
+    return match ? JSON.parse(match[0]) : null;
+  }
+};
+
+const getClient = () => {
+  if (!process.env.GROQ_API_KEY) {
+    return null;
+  }
+
+  return new Groq({ apiKey: process.env.GROQ_API_KEY });
 };
 
 export const generateQuestions = async (subject) => {
-  const fallback = questionBlueprints[subject] || questionBlueprints.DSA;
+  const fallback = buildFallbackQuestions(subject);
   const client = getClient();
 
   if (!client) {
@@ -25,26 +67,27 @@ export const generateQuestions = async (subject) => {
   }
 
   try {
-    const prompt = `
-Generate exactly 9 interview questions for the subject "${subject}".
-Return JSON with an array called "questions".
-The difficulty pattern must be: 3 easy, 4 medium, 2 hard.
-Each question must have:
-- prompt
-- difficulty
-- expectedPoints (2 to 4 short bullet ideas)
-Keep the questions technical and student friendly.
-`;
-
-    const response = await client.responses.create({
-      model,
-      input: prompt
+    const seed = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const completion = await client.chat.completions.create({
+      model: chatModel,
+      temperature: 1,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content:
+            "Generate concise technical interview questions as strict JSON. Return an object with a questions array only."
+        },
+        {
+          role: "user",
+          content: `Generate exactly 10 interview questions for ${subject}. Difficulty pattern: 3 easy, 4 medium, 3 hard. Each question must include prompt, difficulty, and expectedPoints with 2 to 4 short bullets. Avoid repeating textbook wording and vary the topics, phrasing, and examples across sessions. Session seed: ${seed}.`
+        }
+      ]
     });
 
-    const text = response.output_text?.trim();
-    const parsed = JSON.parse(text);
+    const parsed = extractJsonObject(completion.choices[0]?.message?.content);
 
-    if (Array.isArray(parsed.questions) && parsed.questions.length === 9) {
+    if (Array.isArray(parsed.questions) && parsed.questions.length === 10) {
       return parsed.questions;
     }
   } catch (error) {
@@ -54,68 +97,96 @@ Keep the questions technical and student friendly.
   return fallback;
 };
 
-export const evaluateAnswers = async (questions, answers) => {
+export const transcribeAudio = async (file) => {
   const client = getClient();
 
   if (!client) {
-    return questions.map((question, index) => {
-      const answer = answers[index] || "";
-      const ratio = computeCoverageRatio(answer, question.expectedPoints);
-      return {
-        answer,
-        awardedRawScore: Number((ratio * getRawWeight(question.difficulty)).toFixed(2)),
-        feedback: buildRuleBasedFeedback(question, answer, ratio)
-      };
-    });
+    throw new Error("GROQ_API_KEY is required for voice interviews");
   }
 
   try {
-    const prompt = `
-You are evaluating technical interview answers.
-Return strict JSON with an array called "results".
-Each result must contain:
-- awardedRawScore
-- feedback
-
-Rules:
-- Use the provided difficulty to score with a max raw weight of easy=1, medium=2, hard=3.
-- Feedback should be 1-2 sentences and constructive.
-
-Questions:
-${JSON.stringify(questions)}
-
-Answers:
-${JSON.stringify(answers)}
-`;
-
-    const response = await client.responses.create({
-      model,
-      input: prompt
+    const transcription = await client.audio.transcriptions.create({
+      file,
+      model: transcriptionModel,
+      response_format: "verbose_json"
     });
 
-    const parsed = JSON.parse(response.output_text.trim());
-
-    if (Array.isArray(parsed.results) && parsed.results.length === questions.length) {
-      return parsed.results.map((result, index) => ({
-        answer: answers[index] || "",
-        awardedRawScore: Math.max(
-          0,
-          Math.min(getRawWeight(questions[index].difficulty), Number(result.awardedRawScore) || 0)
-        ),
-        feedback: result.feedback || "Feedback unavailable."
-      }));
-    }
+    return transcription.text?.trim() || "";
   } catch (error) {
-    console.warn("AI evaluation failed, using rule-based evaluation:", error.message);
+    throw new Error(`Audio transcription failed: ${error.message}`);
+  }
+};
+
+export const evaluateSingleAnswer = async (question, answer) => {
+  const client = getClient();
+
+  if (!answer?.trim()) {
+    return {
+      answer: "",
+      awardedRawScore: 0
+    };
   }
 
-  return questions.map((question, index) => {
-    const answer = answers[index] || "";
+  if (!client) {
     const ratio = computeCoverageRatio(answer, question.expectedPoints);
     return {
       answer,
-      awardedRawScore: Number((ratio * getRawWeight(question.difficulty)).toFixed(2)),
-      feedback: buildRuleBasedFeedback(question, answer, ratio)
+      awardedRawScore: clampAwardedScore(ratio * getRawWeight(question.difficulty), question.difficulty)
     };
-  });
+  }
+
+  try {
+    const completion = await client.chat.completions.create({
+      model: chatModel,
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content:
+            "You evaluate interview answers strictly as JSON. Return only {\"awardedRawScore\": number}."
+        },
+        {
+          role: "user",
+          content: `Question: ${question.prompt}\nDifficulty: ${question.difficulty}\nExpected points: ${question.expectedPoints.join("; ")}\nStudent answer: ${answer}\nScore this answer from 0 to ${getRawWeight(question.difficulty)}.`
+        }
+      ]
+    });
+
+    const parsed = extractJsonObject(completion.choices[0]?.message?.content);
+
+    return {
+      answer,
+      awardedRawScore: clampAwardedScore(parsed.awardedRawScore, question.difficulty)
+    };
+  } catch (error) {
+    const ratio = computeCoverageRatio(answer, question.expectedPoints);
+    return {
+      answer,
+      awardedRawScore: clampAwardedScore(ratio * getRawWeight(question.difficulty), question.difficulty)
+    };
+  }
+};
+
+export const synthesizeSpeech = async (text) => {
+  const client = getClient();
+
+  if (!client || !text) {
+    return null;
+  }
+
+  try {
+    const response = await client.audio.speech.create({
+      model: ttsModel,
+      voice: ttsVoice,
+      input: text,
+      response_format: "wav"
+    });
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return buffer.toString("base64");
+  } catch (error) {
+    console.warn("Speech synthesis failed:", error.message);
+    return null;
+  }
 };

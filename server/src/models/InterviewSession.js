@@ -36,6 +36,10 @@ const interviewSessionSchema = new mongoose.Schema(
       required: true
     },
     questions: [questionSchema],
+    currentQuestionIndex: {
+      type: Number,
+      default: 0
+    },
     totalScore: {
       type: Number,
       default: 0

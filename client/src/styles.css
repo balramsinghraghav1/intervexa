@@ -120,7 +120,8 @@ button {
 
 .primary-button,
 .ghost-button,
-.subject-button {
+.subject-button,
+.start-circle {
   border-radius: 999px;
   padding: 12px 18px;
   border: 1px solid transparent;
@@ -140,10 +141,33 @@ button {
   border-color: rgba(255, 255, 255, 0.08);
 }
 
+.subject-button.active {
+  background: linear-gradient(135deg, rgba(68, 195, 255, 0.95), rgba(44, 115, 255, 0.95));
+  border-color: rgba(173, 230, 255, 0.7);
+  color: #ecf8ff;
+  box-shadow: 0 12px 34px rgba(44, 115, 255, 0.35);
+}
+
+.start-circle {
+  width: 220px;
+  height: 220px;
+  margin: 20px auto 8px;
+  display: grid;
+  place-items: center;
+  font-size: 2rem;
+  font-family: "Space Grotesk", sans-serif;
+  color: #eff8ff;
+  background:
+    radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.35), transparent 25%),
+    linear-gradient(160deg, #2c73ff, #44c3ff);
+  box-shadow: 0 24px 60px rgba(39, 118, 255, 0.45);
+}
+
 .subject-button.active,
 .ghost-button:hover,
 .primary-button:hover,
-.subject-button:hover {
+.subject-button:hover,
+.start-circle:hover {
   transform: translateY(-1px);
 }
 
@@ -316,6 +340,32 @@ button {
 
 .feedback-copy {
   color: #ffdcae;
+}
+
+.voice-controls {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mute-toggle {
+  margin-left: auto;
+}
+
+.transcript-box {
+  padding: 18px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.subject-button:disabled,
+.start-circle:disabled,
+.primary-button:disabled,
+.ghost-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .result-hero h2 {
